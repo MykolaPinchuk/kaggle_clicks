@@ -155,6 +155,7 @@ Each run writes to `runs/<timestamp>_<tag>/`:
 - `config.json` (sample fraction, split cutoffs, entities, windows, model params)
 - `metrics.json` (val/test ROC-AUC, PR-AUC, runtime)
 - optionally: feature importance dump from XGB
+- `report.md`: human-readable summary (data coverage, feature config, metrics table, top features)
 
 ## 10) Phased Milestones
 

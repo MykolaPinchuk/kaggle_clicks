@@ -9,3 +9,4 @@ This repo is set up to run time-based (OOT) CTR experiments on the Kaggle Avazu 
 
 - Put `train.csv` at `data/raw/train.csv`
 - Run 1% sample + TE baseline: `python -m kaggle_clicks.run_baseline_te --sample-pct 1`
+- Each run creates a timestamped folder under `runs/` containing `config.json`, `metrics.json`, the trained `model.json`, and a human-readable `report.md`.
