@@ -9,6 +9,8 @@ Secondary metric: **PR-AUC** (and optionally logloss as a sanity check)
 
 Core hypothesis: **recent historical behavior by entity** (e.g., `device_ip`, `device_id`, `app_id`, `site_id`) contains strong predictive signal when encoded as trailing-window statistics.
 
+Time-aggregation experiment plan: `docs/TIME_AGG_EXPERIMENTS.md`
+
 ## 2) Constraints / Principles
 
 - Compute: single PC; use all vCPUs except one.
@@ -127,17 +129,14 @@ Key anti-leakage rule:
 
 ### Efficient computation approach
 
-To scale, compute per-entity-per-hour aggregates first:
+To scale and to keep “online” behavior correct, prefer a streaming feature-store approach:
 
-1. Build table: `(entity, hour) -> imps, clicks`
-2. For each entity, compute rolling sums over hour-index for each window:
-   - `imps_1h`, `imps_6h`, `imps_24h`, same for clicks
-   - shift by 1 hour to exclude the current hour
-3. Join back to row-level data on `(entity, hour)`
+1. Process events in increasing `hour_dt`.
+2. For each entity value, maintain rolling window state (impressions/clicks) for each window.
+3. At hour boundary changes, “flush” the counts from the previous hour into the state to guarantee **no same-hour leakage**.
+4. Emit features for the current row from the pre-flush state (i.e., history strictly from `< H`).
 
-Library choice:
-- EDA in `pandas`
-- Aggregations in `polars` or `duckdb` (whichever is faster/cleaner after a quick spike)
+Implementation note: the current code uses a streaming implementation in `kaggle_clicks/time_agg.py`.
 
 ### Online simulation during validation/test
 
@@ -153,8 +152,7 @@ Practically, this works naturally with the `(entity, hour)` rolling method as lo
 Each run writes to `runs/<timestamp>_<tag>/`:
 
 - `config.json` (sample fraction, split cutoffs, entities, windows, model params)
-- `metrics.json` (val/test ROC-AUC, PR-AUC, runtime)
-- optionally: feature importance dump from XGB
+- `metrics.json` (train/val/test ROC-AUC and PR-AUC, plus `best_iteration`)
 - `report.md`: human-readable summary (data coverage, feature config, metrics table, top features)
 
 ## 10) Phased Milestones
@@ -164,7 +162,7 @@ Each run writes to `runs/<timestamp>_<tag>/`:
 1. Download/extract data to `data/raw/`
 2. Parse `hour` and build 1% deterministic sample to `data/interim/`
 3. Implement strict OOT `train/val/test` split
-4. Train XGB baseline (hashed categoricals + time features)
+4. Train XGB baseline (time-aware target encoding + time features)
 5. Confirm metrics compute + run logging
 
 Exit criteria:
@@ -173,10 +171,9 @@ Exit criteria:
 
 ### Phase B: time-agg features on sample
 
-1. Implement `(entity, hour)` aggregation + rolling windows (shifted)
-2. Add join-back to row level
-3. Add features for the four entities and three windows
-4. Run ablations:
+1. Implement online-safe time aggregation features (Family A)
+2. Add features for the four entities and initial windows
+3. Run ablations:
    - baseline
    - + each entity alone
    - + all entities
