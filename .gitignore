@@ -1,0 +1,24 @@
+# Data
+data/raw/
+data/interim/
+data/processed/
+secrets/
+
+# Runs / artifacts
+runs/
+models/
+reports/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Env / tooling
+.venv/
+.env
+.DS_Store
