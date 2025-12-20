@@ -62,12 +62,17 @@ def _write_report(
     lines.append(f"- Numeric base features: 2 (`hour_of_day`, `prior_ctr`)")
     lines.append(f"- Target-encoded features: {len(te_cols)}")
     if time_agg_cols:
-        lines.append(
-            f"- Time aggregation: {len(args.time_agg_entities)} entities × {len(args.time_agg_windows)} windows "
-            f"(alpha={args.time_agg_alpha}, beta={args.time_agg_beta})"
-        )
+        lines.append(f"- Time aggregation: enabled (alpha={args.time_agg_alpha}, beta={args.time_agg_beta})")
         lines.append(f"  - Entities: {', '.join(args.time_agg_entities)}")
-        lines.append(f"  - Windows (hours): {', '.join(map(str, args.time_agg_windows))}")
+        if args.time_agg_windows:
+            lines.append(f"  - Trailing windows (hours): {', '.join(map(str, args.time_agg_windows))}")
+            lines.append(f"  - Gap (hours): {args.time_agg_gap_hours}")
+        if args.time_agg_bucket_edges:
+            lines.append(f"  - Bucket edges (hours): {', '.join(map(str, args.time_agg_bucket_edges))}")
+        if args.time_agg_calendar:
+            lines.append("  - Calendar windows: today + yesterday")
+        if args.time_agg_event_windows:
+            lines.append(f"  - Event windows (last N imps): {', '.join(map(str, args.time_agg_event_windows))}")
     else:
         lines.append("- Time aggregation: disabled")
 
@@ -151,6 +156,31 @@ def main() -> int:
         default=[1, 6, 24],
         help="Window sizes in hours for time aggregation features.",
     )
+    ap.add_argument(
+        "--time-agg-gap-hours",
+        type=int,
+        default=0,
+        help="Exclude the most recent g hours: use [H-w-g, H-g) instead of [H-w, H).",
+    )
+    ap.add_argument(
+        "--time-agg-bucket-edges",
+        nargs="*",
+        type=int,
+        default=[],
+        help="If set, add disjoint bucket windows with these cumulative edges (e.g. 1 6 24 168).",
+    )
+    ap.add_argument(
+        "--time-agg-calendar",
+        action="store_true",
+        help="If set, add calendar-aligned windows: since start-of-day (today) and yesterday.",
+    )
+    ap.add_argument(
+        "--time-agg-event-windows",
+        nargs="*",
+        type=int,
+        default=[],
+        help="If set, add event-count windows using last N impressions (approx, by-hour blocks).",
+    )
     ap.add_argument("--time-agg-alpha", type=float, default=1.0)
     ap.add_argument("--time-agg-beta", type=float, default=10.0)
     args = ap.parse_args()
@@ -183,6 +213,10 @@ def main() -> int:
                 windows=tuple(args.time_agg_windows),
                 alpha=args.time_agg_alpha,
                 beta=args.time_agg_beta,
+                gap_hours=int(args.time_agg_gap_hours),
+                bucket_edges=tuple(args.time_agg_bucket_edges),
+                add_calendar_windows=bool(args.time_agg_calendar),
+                event_windows=tuple(args.time_agg_event_windows),
             ),
         )
 

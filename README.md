@@ -5,6 +5,7 @@ This repo is set up to run time-based (OOT) CTR experiments on the Kaggle Avazu 
 - Project plan: `docs/PLAN.md`
 - Time-aggregation experiment plan: `docs/TIME_AGG_EXPERIMENTS.md`
 - Data download: `docs/DATA.md`
+- EDA report: `docs/EDA_REPORT.md`
 
 ## Quickstart (once data is downloaded)
 

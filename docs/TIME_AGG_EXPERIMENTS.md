@@ -186,3 +186,21 @@ Every run must emit `runs/<timestamp>_<tag>/report.md` including:
   - calendar-aligned windows,
   - event-count windows (optional; may require a separate data structure per entity).
 - Keep runtime < 5 minutes at 5% sample; if not, reduce window count and rerun the sweep.
+
+### Current CLI hooks (implemented)
+
+The baseline runner supports Family A variants via `python -m kaggle_clicks.run_baseline_te`:
+
+- Trailing windows: `--time-agg-windows 1 6 24`
+- Gap windows: `--time-agg-gap-hours 1` (uses `[H-w-g, H-g)`; feature names get a `_g{g}h` suffix)
+- Bucketized windows: `--time-agg-bucket-edges 1 6 24 168` (emits disjoint `b0to1h`, `b1to6h`, …)
+- Calendar windows: `--time-agg-calendar` (emits `*_today` and `*_yday`)
+- Event-count windows: `--time-agg-event-windows 10 50 200` (approx by-hour blocks; still no same-hour leakage)
+
+### Sweep runner (implemented)
+
+For quick, comparable runs (frozen model params) use:
+
+- `python -m kaggle_clicks.run_sweep_family_a --sample-pct 1 --sweep-tag familyA_phase01_1pct`
+
+This writes a sweep folder under `runs/sweeps/` with `summary.md`, `summary.csv`, and the exact commands used.
