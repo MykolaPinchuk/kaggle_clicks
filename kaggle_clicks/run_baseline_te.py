@@ -14,7 +14,12 @@ from kaggle_clicks.paths import get_paths
 from kaggle_clicks.sampling import deterministic_pct_mask
 from kaggle_clicks.te import TEConfig, add_time_target_encoding
 from kaggle_clicks.time_agg import TimeAggConfig, add_time_agg_features
-from kaggle_clicks.time_utils import add_time_columns, assert_strict_oot, make_oot_splits_by_day
+from kaggle_clicks.time_utils import (
+    add_time_columns,
+    assert_strict_oot,
+    make_oot_splits_by_day,
+    make_rolling_tail_folds_by_day,
+)
 
 
 def _fmt_ts(ts: pd.Timestamp | None) -> str:
@@ -51,6 +56,10 @@ def _write_report(
     lines.append("## Data")
     lines.append(f"- Sample fraction: {args.sample_pct}% (deterministic hash on `id`)")
     lines.append(f"- Rows: {len(df):,}")
+    if getattr(args, "rolling_tail_fold", None):
+        lines.append(f"- Split mode: rolling tail (fold {args.rolling_tail_fold})")
+    else:
+        lines.append("- Split mode: default (test=last day, val=day before test)")
     lines.append("")
     lines.append("| Split | Rows | Start hour | End hour |")
     lines.append("| --- | ---: | --- | --- |")
@@ -94,6 +103,11 @@ def _write_report(
         m = metrics.get(split)
         if m:
             lines.append(f"| {split} | {m['roc_auc']:.4f} | {m['pr_auc']:.4f} |")
+    if getattr(args, "export_preds", False):
+        lines.append("")
+        lines.append("## Prediction Exports")
+        lines.append("- preds_val.parquet")
+        lines.append("- preds_test.parquet")
 
     if feature_importance:
         lines.append("")
@@ -134,6 +148,18 @@ def main() -> int:
     ap.add_argument("--sample-pct", type=int, default=1)
     ap.add_argument("--sample-parquet", default=str(get_paths().data_interim / "train_sample.parquet"))
     ap.add_argument("--m", type=float, default=100.0, help="TE smoothing strength (larger = more shrinkage).")
+    ap.add_argument(
+        "--rolling-tail-fold",
+        choices=["A", "B"],
+        default=None,
+        help="If set, use rolling-tail Fold A/B splits (see docs/plan_for_working_paper_results.md).",
+    )
+    ap.add_argument("--export-preds", action="store_true", help="If set, export preds_val/test.parquet.")
+    ap.add_argument(
+        "--preds-fold-id",
+        default=None,
+        help="Optional fold id to write into prediction exports (default: rolling-tail fold or 'single').",
+    )
     ap.add_argument("--n-estimators", type=int, default=2000)
     ap.add_argument("--learning-rate", type=float, default=0.05)
     ap.add_argument("--max-depth", type=int, default=6)
@@ -195,7 +221,11 @@ def main() -> int:
     raw = _load_or_make_sample(args.train_csv, args.sample_pct, args.sample_parquet)
     df = add_time_columns(raw, hour_col="hour").sort_values("hour_dt").reset_index(drop=True)
 
-    splits = make_oot_splits_by_day(df)
+    if args.rolling_tail_fold:
+        folds = make_rolling_tail_folds_by_day(df)
+        splits = folds[str(args.rolling_tail_fold)]
+    else:
+        splits = make_oot_splits_by_day(df)
     assert_strict_oot(df, splits)
 
     label_col = "click"
@@ -309,6 +339,24 @@ def main() -> int:
         time_agg_cols,
         best_iteration,
     )
+
+    if args.export_preds:
+        fold_id = args.preds_fold_id or args.rolling_tail_fold or "single"
+        for split_name, idx, y_arr, p_arr in (
+            ("val", splits["val"], y_val, val_prob),
+            ("test", splits["test"], y_test, test_prob),
+        ):
+            export = pd.DataFrame(
+                {
+                    "row_id": idx.to_numpy(dtype=np.int64, copy=False),
+                    "hour_dt": df.loc[idx, "hour_dt"].to_numpy(),
+                    "y": y_arr.astype(np.int8, copy=False),
+                    "p": p_arr.astype(np.float32, copy=False),
+                    "fold_id": np.full(len(idx), fold_id, dtype=object),
+                }
+            )
+            export_path = run_dir / f"preds_{split_name}.parquet"
+            export.to_parquet(export_path, index=False)
     return 0
 
 

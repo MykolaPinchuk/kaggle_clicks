@@ -162,17 +162,21 @@ Constraints:
 - Must maintain strict OOT within each fold.
 - Fold definitions must be deterministic and logged.
 
+Status: implemented as `make_rolling_tail_folds_by_day(...)` in `kaggle_clicks/time_utils.py` and exposed via `--rolling-tail-fold {A,B}` in `kaggle_clicks/run_baseline_te.py`.
+
 ### 5.2 Export predictions in `kaggle_clicks/run_baseline_te.py`
 
 Enhance the baseline runner to optionally export predictions:
 
 New CLI flags (suggested):
 - `--export-preds` (bool)
-- `--fold-id A|B` (string, written into preds files)
+- `--preds-fold-id <string>` (optional, written into preds files)
 
 When confirming export correctness:
 - Ensure `row_id` aligns with the `fe` DataFrame (post sort/reset).
 - Ensure `preds_test.parquet` contains only test rows.
+
+Status: implemented via `--export-preds` and `--preds-fold-id`; if unset, fold id defaults to `--rolling-tail-fold` or `"single"`.
 
 ### 5.3 Add inference utilities
 
@@ -183,6 +187,8 @@ Add module(s), e.g.:
   - `paired_block_bootstrap_pr_auc(df_pred_a, df_pred_b, group_col='hour_dt', B=200, seed=42)`
 
 Add quick self-tests on small synthetic arrays (no heavy test framework required if repo doesn’t use one).
+
+Status: implemented as described.
 
 ### 5.4 Extend sweep runner to orchestrate folds + inference
 
@@ -195,6 +201,10 @@ Extend `kaggle_clicks/run_sweep_family_a.py` (or add a new `run_sweep_working_pa
    - `runs/sweeps/.../master_results.csv` (one row per (spec, fold))
    - `runs/sweeps/.../summary.md` (main table: means, stds)
    - `runs/sweeps/.../inference_vs_baseline.csv` (Δ metrics + CIs)
+
+Status:
+- `kaggle_clicks/run_sweep_family_a.py` supports `--rolling-tail` and `--export-preds` and writes `summary.md`/`summary.csv`.
+- `kaggle_clicks/postprocess_sweep_inference.py` writes `inference_vs_baseline.csv` for a chosen baseline run id.
 
 ### 5.5 Full-data “precision” phase (after selection)
 
@@ -220,4 +230,3 @@ After the 5% sweep narrows down 1–2 best specs:
 - Do not add new aggregation targets beyond what the current Family A implementation emits.
 - Do not tune smoothing/backoff thresholds.
 - If a feature change would be classified as A.3/A.4, stop and get explicit approval.
-

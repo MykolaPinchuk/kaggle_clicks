@@ -46,6 +46,52 @@ def make_oot_splits_by_day(df: pd.DataFrame) -> dict[str, pd.Index]:
     return {"train": train_idx, "val": val_idx, "test": test_idx}
 
 
+def make_rolling_tail_folds_by_day(df: pd.DataFrame) -> dict[str, dict[str, pd.Index]]:
+    """
+    Create two "rolling tail" folds using the last 3 distinct days in the dataset.
+
+    Let the final three days be: D-2, D-1, D (chronological).
+
+    Fold A:
+      - train: days < D-1
+      - val:   day  D-1
+      - test:  day  D
+
+    Fold B:
+      - train: days < D-2
+      - val:   day  D-2
+      - test:  day  D-1
+
+    This is intended as a lightweight stability check for OOT evaluation while keeping runtime bounded.
+    """
+    if "day" not in df.columns:
+        if "hour_dt" not in df.columns:
+            raise ValueError("df must contain 'day' or 'hour_dt' to construct rolling tail folds.")
+        day = df["hour_dt"].dt.floor("D")
+        days = pd.Index(day.unique()).sort_values()
+        day_series = day
+    else:
+        days = pd.Index(df["day"].unique()).sort_values()
+        day_series = df["day"]
+
+    if len(days) < 4:
+        raise ValueError(f"Need >=4 distinct days for rolling tail folds, got {len(days)}.")
+
+    d_minus2, d_minus1, d0 = days[-3], days[-2], days[-1]
+
+    fold_a = {
+        "train": df.index[day_series < d_minus1],
+        "val": df.index[day_series == d_minus1],
+        "test": df.index[day_series == d0],
+    }
+    fold_b = {
+        "train": df.index[day_series < d_minus2],
+        "val": df.index[day_series == d_minus2],
+        "test": df.index[day_series == d_minus1],
+    }
+    return {"A": fold_a, "B": fold_b}
+
+
 def assert_strict_oot(df: pd.DataFrame, splits: dict[str, pd.Index]) -> None:
     def bounds(name: str) -> tuple[pd.Timestamp, pd.Timestamp]:
         s = df.loc[splits[name], "hour_dt"]

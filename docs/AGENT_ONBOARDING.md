@@ -61,14 +61,35 @@ Minimal “know these files” set:
 
 - `python -m kaggle_clicks.run_baseline_te --sample-pct 1 --run-tag my_test`
 
+Useful options:
+- Rolling-tail folds: `--rolling-tail-fold A` or `--rolling-tail-fold B`
+- Export predictions: `--export-preds` (writes `preds_val.parquet` and `preds_test.parquet`)
+
 ### B) Run a sweep (comparable configs)
 
 - `python -m kaggle_clicks.run_sweep_family_a --sample-pct 1 --sweep-tag familyA_phase01_1pct`
+
+Useful options:
+- Rolling-tail folds across runs: `--rolling-tail`
+- Export predictions for inference: `--export-preds`
+- Enable Phase 2 (shapes): `--enable-phase2 --phase2-base-windows 1 6 24 48 168`
+
+### C) Postprocess inference (DeLong + block bootstrap)
+
+- `python -m kaggle_clicks.postprocess_sweep_inference --sweep-dir runs/sweeps/<...> --baseline-run-id R3 --split test --bootstrap-reps 200 --seed 42`
 
 ### C) EDA (readable report)
 
 - Read: `docs/EDA_REPORT.md`
 - Regenerate: `python human_src/generate_eda_report.py --sample-parquet data/interim/train_sample.parquet --out-md docs/EDA_REPORT.md`
+
+## 7) Current state / handoff pointers
+
+- Latest “what to do next” for the full paper grid is documented in `logs/agents/agent_logs/2025-12-20T20-49_codex.md`.
+- Inference utilities live in:
+  - `kaggle_clicks/inference_auc.py` (paired DeLong for ROC-AUC)
+  - `kaggle_clicks/inference_bootstrap.py` (paired block bootstrap for PR-AUC)
+  - `kaggle_clicks/postprocess_sweep_inference.py` (sweep → `inference_vs_baseline.csv`)
 
 ## 7) Agent handoff checklist (end of session)
 
@@ -79,4 +100,3 @@ Before terminating:
 - If you created new run folders under `runs/`, ensure they include `report.md` and `metrics.json`.
 - If you added large artifacts, ensure `.gitignore` covers them.
 - Makse sure that this onboarding guide is up to date and will be useful for the next agent.
-

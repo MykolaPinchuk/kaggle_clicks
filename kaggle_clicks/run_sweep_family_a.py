@@ -205,15 +205,16 @@ def _write_sweep_outputs(
     lines.append(f"- Sample: `{sample_pct}%` (`{sample_parquet}`)")
     lines.append(f"- Train CSV: `{train_csv}`")
     lines.append("")
-    lines.append("| Run | Description | Return | Val ROC-AUC | Test ROC-AUC | Run dir |")
-    lines.append("| --- | --- | ---: | ---: | ---: | --- |")
+    lines.append("| Run | Fold | Description | Return | Val ROC-AUC | Test ROC-AUC | Run dir |")
+    lines.append("| --- | --- | --- | ---: | ---: | ---: | --- |")
     for r in rows:
         v = r.get("val_roc_auc")
         t = r.get("test_roc_auc")
         v_s = f"{float(v):.4f}" if v is not None else "NA"
         t_s = f"{float(t):.4f}" if t is not None else "NA"
+        fold = r.get("fold_id", "single")
         lines.append(
-            f"| {r['run_id']} | {r['description']} | {r['returncode']} | {v_s} | {t_s} | `{r.get('run_dir','')}` |"
+            f"| {r['run_id']} | {fold} | {r['description']} | {r['returncode']} | {v_s} | {t_s} | `{r.get('run_dir','')}` |"
         )
     (sweep_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -244,6 +245,8 @@ def main() -> int:
     )
     ap.add_argument("--include-a4", action="store_true")
     ap.add_argument("--enable-phase2", action="store_true")
+    ap.add_argument("--rolling-tail", action="store_true", help="Run Fold A/B rolling-tail splits per spec.")
+    ap.add_argument("--export-preds", action="store_true", help="Pass --export-preds to each run.")
     ap.add_argument(
         "--phase2-base-windows",
         nargs="*",
@@ -283,6 +286,8 @@ def main() -> int:
             "n_jobs": int(args.n_jobs),
         },
         "te_m": float(args.m),
+        "rolling_tail": bool(args.rolling_tail),
+        "export_preds": bool(args.export_preds),
         "specs": [{"run_id": s.run_id, "description": s.description, "cli_args": list(s.cli_args)} for s in specs],
     }
     (sweep_dir / "sweep_config.json").write_text(json.dumps(sweep_config, indent=2, sort_keys=True))
@@ -291,98 +296,116 @@ def main() -> int:
     rows: list[dict[str, Any]] = []
 
     try:
+        stop = False
         for spec in specs:
-            elapsed = time.time() - start
-            remaining = int(args.max_wall_seconds) - elapsed
-            if remaining <= 0:
-                break
+            for fold_id in (("A", "B") if args.rolling_tail else (None,)):
+                elapsed = time.time() - start
+                remaining = int(args.max_wall_seconds) - elapsed
+                if remaining <= 0:
+                    stop = True
+                    break
 
-            run_tag = f"{args.sweep_tag}_{spec.run_id}"
-            cmd = [
-                sys.executable,
-                "-m",
-                "kaggle_clicks.run_baseline_te",
-                "--train-csv",
-                args.train_csv,
-                "--sample-pct",
-                str(int(args.sample_pct)),
-                "--sample-parquet",
-                sample_parquet,
-                "--run-tag",
-                run_tag,
-                "--m",
-                str(float(args.m)),
-                "--n-estimators",
-                str(int(args.n_estimators)),
-                "--learning-rate",
-                str(float(args.learning_rate)),
-                "--max-depth",
-                str(int(args.max_depth)),
-                "--subsample",
-                str(float(args.subsample)),
-                "--colsample-bytree",
-                str(float(args.colsample_bytree)),
-                "--reg-lambda",
-                str(float(args.reg_lambda)),
-                "--min-child-weight",
-                str(float(args.min_child_weight)),
-                "--n-jobs",
-                str(int(args.n_jobs)),
-                *spec.cli_args,
-            ]
+                fold_tag = f"_fold{fold_id}" if fold_id else ""
+                run_tag = f"{args.sweep_tag}_{spec.run_id}{fold_tag}"
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "kaggle_clicks.run_baseline_te",
+                    "--train-csv",
+                    args.train_csv,
+                    "--sample-pct",
+                    str(int(args.sample_pct)),
+                    "--sample-parquet",
+                    sample_parquet,
+                    "--run-tag",
+                    run_tag,
+                    "--m",
+                    str(float(args.m)),
+                    "--n-estimators",
+                    str(int(args.n_estimators)),
+                    "--learning-rate",
+                    str(float(args.learning_rate)),
+                    "--max-depth",
+                    str(int(args.max_depth)),
+                    "--subsample",
+                    str(float(args.subsample)),
+                    "--colsample-bytree",
+                    str(float(args.colsample_bytree)),
+                    "--reg-lambda",
+                    str(float(args.reg_lambda)),
+                    "--min-child-weight",
+                    str(float(args.min_child_weight)),
+                    "--n-jobs",
+                    str(int(args.n_jobs)),
+                    *spec.cli_args,
+                ]
+                if fold_id:
+                    cmd += ["--rolling-tail-fold", fold_id]
+                if args.export_preds:
+                    cmd += ["--export-preds"]
+                    if fold_id:
+                        cmd += ["--preds-fold-id", fold_id]
 
-            with (sweep_dir / "commands.sh").open("a", encoding="utf-8") as f:
-                f.write(" ".join(cmd) + "\n")
+                with (sweep_dir / "commands.sh").open("a", encoding="utf-8") as f:
+                    f.write(" ".join(cmd) + "\n")
 
-            per_run_timeout = int(min(300, max(30, remaining + 10)))
-            try:
-                proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=per_run_timeout)
-            except subprocess.TimeoutExpired as e:
-                (sweep_dir / f"{spec.run_id}_stdout.log").write_text(e.stdout or "", encoding="utf-8")
-                (sweep_dir / f"{spec.run_id}_stderr.log").write_text(e.stderr or "", encoding="utf-8")
-                rows.append(
-                    {
-                        "run_id": spec.run_id,
-                        "run_tag": run_tag,
-                        "description": spec.description,
-                        "returncode": 124,
-                        "run_dir": str(_find_run_dir_for_tag(run_tag) or ""),
-                    }
+                per_run_timeout = int(min(300, max(30, remaining + 10)))
+                try:
+                    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=per_run_timeout)
+                except subprocess.TimeoutExpired as e:
+                    log_prefix = f"{spec.run_id}{fold_tag}"
+                    (sweep_dir / f"{log_prefix}_stdout.log").write_text(e.stdout or "", encoding="utf-8")
+                    (sweep_dir / f"{log_prefix}_stderr.log").write_text(e.stderr or "", encoding="utf-8")
+                    rows.append(
+                        {
+                            "run_id": spec.run_id,
+                            "fold_id": fold_id or "single",
+                            "run_tag": run_tag,
+                            "description": spec.description,
+                            "returncode": 124,
+                            "run_dir": str(_find_run_dir_for_tag(run_tag) or ""),
+                        }
+                    )
+                    stop = True
+                    break
+
+                log_prefix = f"{spec.run_id}{fold_tag}"
+                (sweep_dir / f"{log_prefix}_stdout.log").write_text(proc.stdout, encoding="utf-8")
+                (sweep_dir / f"{log_prefix}_stderr.log").write_text(proc.stderr, encoding="utf-8")
+
+                run_dir = _find_run_dir_for_tag(run_tag)
+                row: dict[str, Any] = {
+                    "run_id": spec.run_id,
+                    "fold_id": fold_id or "single",
+                    "run_tag": run_tag,
+                    "description": spec.description,
+                    "returncode": proc.returncode,
+                    "run_dir": str(run_dir) if run_dir else "",
+                }
+
+                if run_dir and (run_dir / "metrics.json").exists():
+                    metrics = _read_json(run_dir / "metrics.json")
+                    row["best_iteration"] = metrics.get("best_iteration")
+                    for split in ("train", "val", "test"):
+                        s = metrics["splits"][split]
+                        row[f"{split}_roc_auc"] = s["roc_auc"]
+                        row[f"{split}_pr_auc"] = s["pr_auc"]
+
+                rows.append(row)
+                _write_sweep_outputs(
+                    sweep_dir=sweep_dir,
+                    sweep_ts=sweep_ts,
+                    sweep_tag=args.sweep_tag,
+                    sample_pct=int(args.sample_pct),
+                    sample_parquet=sample_parquet,
+                    train_csv=args.train_csv,
+                    rows=rows,
                 )
-                break
 
-            (sweep_dir / f"{spec.run_id}_stdout.log").write_text(proc.stdout, encoding="utf-8")
-            (sweep_dir / f"{spec.run_id}_stderr.log").write_text(proc.stderr, encoding="utf-8")
-
-            run_dir = _find_run_dir_for_tag(run_tag)
-            row: dict[str, Any] = {
-                "run_id": spec.run_id,
-                "run_tag": run_tag,
-                "description": spec.description,
-                "returncode": proc.returncode,
-                "run_dir": str(run_dir) if run_dir else "",
-            }
-
-            if run_dir and (run_dir / "metrics.json").exists():
-                metrics = _read_json(run_dir / "metrics.json")
-                row["best_iteration"] = metrics.get("best_iteration")
-                for split in ("train", "val", "test"):
-                    s = metrics["splits"][split]
-                    row[f"{split}_roc_auc"] = s["roc_auc"]
-                    row[f"{split}_pr_auc"] = s["pr_auc"]
-
-            rows.append(row)
-            _write_sweep_outputs(
-                sweep_dir=sweep_dir,
-                sweep_ts=sweep_ts,
-                sweep_tag=args.sweep_tag,
-                sample_pct=int(args.sample_pct),
-                sample_parquet=sample_parquet,
-                train_csv=args.train_csv,
-                rows=rows,
-            )
-
-            if proc.returncode != 0:
+                if proc.returncode != 0:
+                    stop = True
+                    break
+            if stop:
                 break
     finally:
         _write_sweep_outputs(
