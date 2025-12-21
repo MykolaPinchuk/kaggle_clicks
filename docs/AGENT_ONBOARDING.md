@@ -31,6 +31,7 @@ Minimal “know these files” set:
 
 - `kaggle_clicks/run_baseline_te.py`
   - Single-run pipeline: load sample → add time columns → OOT split → TE → time-agg → XGB → write `runs/<timestamp>_<tag>/...`.
+  - Supports fractional smoke runs via `--sample-frac` (e.g. `0.001` = 0.1%) and prediction export via `--export-preds`.
 - `kaggle_clicks/time_utils.py`
   - Parsing `hour` → `hour_dt` and constructing strict OOT splits.
 - `kaggle_clicks/te.py`
@@ -39,6 +40,8 @@ Minimal “know these files” set:
   - Streaming time-aggregation features with online constraint (no same-hour leakage) + Family A variants.
 - `kaggle_clicks/run_sweep_family_a.py`
   - Orchestrates multiple comparable runs; writes `runs/sweeps/.../summary.*`.
+- `kaggle_clicks/run_sweep_family_a_full_grid.py`
+  - Runs the full “paper grid” (4 length sets × 5 shapes) and supports rolling-tail Fold A/B with resume/skip; writes per-run logs under `runs/sweeps/.../logs/`.
 
 ## 4) Key invariants (don’t break these)
 
@@ -64,6 +67,7 @@ Minimal “know these files” set:
 Useful options:
 - Rolling-tail folds: `--rolling-tail-fold A` or `--rolling-tail-fold B`
 - Export predictions: `--export-preds` (writes `preds_val.parquet` and `preds_test.parquet`)
+- Fractional smoke runs: `--sample-frac 0.001` (0.1%) + set `--sample-parquet` to a dedicated path
 
 ### B) Run a sweep (comparable configs)
 
@@ -78,10 +82,30 @@ Useful options:
 
 - `python -m kaggle_clicks.postprocess_sweep_inference --sweep-dir runs/sweeps/<...> --baseline-run-id R3 --split test --bootstrap-reps 200 --seed 42`
 
-### C) EDA (readable report)
+### D) Paper-grid sweep (long)
+
+- Full grid (20 specs × Fold A/B = 40 runs):
+  - `python -m kaggle_clicks.run_sweep_family_a_full_grid --sample-pct 10 --sample-parquet data/interim/train_sample_10pct.parquet --sweep-tag paper_full_grid_10pct --rolling-tail --export-preds --max-wall-seconds 57600 --per-run-timeout-seconds 7200`
+- Monitor:
+  - progress: `runs/sweeps/<...>/sweep.log`
+  - per-run stdout/stderr: `runs/sweeps/<...>/logs/`
+  - rolling summary: `runs/sweeps/<...>/summary.md`
+- Baseline run id for inference in the paper grid is typically `A3_trailing`.
+
+Note: For long runs, avoid running inside a VSCode/Chrome-integrated terminal if you see OOM issues; use a plain terminal/session and keep memory-heavy apps minimal.
+
+### E) EDA (readable report)
 
 - Read: `docs/EDA_REPORT.md`
 - Regenerate: `python human_src/generate_eda_report.py --sample-parquet data/interim/train_sample.parquet --out-md docs/EDA_REPORT.md`
+
+## 6.1) Resource troubleshooting (CPU/RAM)
+
+- If you see low CPU utilization during sweeps, it’s usually because feature engineering is the bottleneck; consider running multiple specs concurrently via `kaggle_clicks/run_sweep_family_a_full_grid.py --max-parallel-runs ...` and keep per-run `--n-jobs` low to avoid oversubscription.
+- If you hit RAM OOMs on large samples (notably A4 configs), prefer `--max-parallel-runs 1` and reduce XGBoost threads (e.g. `--n-jobs 1` or `2`). The peak RAM driver is time-aggregation feature construction.
+- For unattended runs, use the built-in memory throttle:
+  - `--ram-budget-gib 25 --max-parallel-runs 2 --n-jobs 1`
+  - The sweep log records `PAUSE_MEM ...` lines when it temporarily stops launching new runs to avoid OOM/swap thrash.
 
 ## 7) Current state / handoff pointers
 

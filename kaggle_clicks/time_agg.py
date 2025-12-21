@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import bisect
+from array import array
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from pandas.api import types as ptypes
 
 
 @dataclass(frozen=True)
@@ -18,31 +21,6 @@ class TimeAggConfig:
     bucket_edges: tuple[int, ...] = ()
     add_calendar_windows: bool = False
     event_windows: tuple[int, ...] = ()
-
-
-class _WindowState:
-    __slots__ = ("window", "events", "imps", "clicks")
-
-    def __init__(self, window: int) -> None:
-        self.window = int(window)
-        self.events: deque[tuple[int, float, float]] = deque()
-        self.imps: float = 0.0
-        self.clicks: float = 0.0
-
-    def drop_until(self, hour_idx: int) -> None:
-        cutoff = hour_idx - self.window
-        while self.events and self.events[0][0] < cutoff:
-            _, imps, clicks = self.events.popleft()
-            self.imps -= imps
-            self.clicks -= clicks
-
-    def snapshot(self) -> tuple[float, float]:
-        return self.imps, self.clicks
-
-    def add(self, hour_idx: int, imps: float, clicks: float) -> None:
-        self.events.append((hour_idx, imps, clicks))
-        self.imps += imps
-        self.clicks += clicks
 
 
 class _EventWindowState:
@@ -87,7 +65,13 @@ class _EventWindowState:
 
 @dataclass
 class _EntityState:
-    windows: dict[int, _WindowState]
+    max_window: int
+    hours: array
+    imps: array
+    clicks: array
+    cum_imps: array
+    cum_clicks: array
+    start_idx: int = 0
     last_seen_hour: int | None = None
     day_idx: int | None = None
     day_imps: float = 0.0
@@ -98,8 +82,11 @@ class _EntityState:
     event_windows: dict[int, _EventWindowState] | None = None
 
     def advance(self, hour_idx: int) -> None:
-        for state in self.windows.values():
-            state.drop_until(hour_idx)
+        cutoff = int(hour_idx) - int(self.max_window)
+        # We never delete list elements (small max length ~= #hours with activity),
+        # but moving start_idx keeps bisect work bounded.
+        while self.start_idx < len(self.hours) and self.hours[self.start_idx] < cutoff:
+            self.start_idx += 1
 
     def _ensure_day(self, current_day: int) -> None:
         if self.day_idx is None:
@@ -119,15 +106,28 @@ class _EntityState:
         self.day_imps = 0.0
         self.day_clicks = 0.0
 
+    def _trailing_sum(self, hour_idx: int, window: int) -> tuple[float, float]:
+        if not self.hours:
+            return 0.0, 0.0
+        cutoff = int(hour_idx) - int(window)
+        i = bisect.bisect_left(self.hours, cutoff, lo=self.start_idx)
+        if i >= len(self.hours):
+            return 0.0, 0.0
+        total_imps = self.cum_imps[-1]
+        total_clicks = self.cum_clicks[-1]
+        if i == 0:
+            return total_imps, total_clicks
+        return total_imps - self.cum_imps[i - 1], total_clicks - self.cum_clicks[i - 1]
+
     def snapshot(
-        self, hour_idx: int, day_idx: int
+        self, hour_idx: int, day_idx: int, needed_trailing: tuple[int, ...]
     ) -> tuple[dict[int, tuple[float, float]], float, tuple[float, float], tuple[float, float], dict[int, tuple[float, float]]]:
         self.advance(hour_idx)
         self._ensure_day(day_idx)
 
         trailing: dict[int, tuple[float, float]] = {}
-        for window, state in self.windows.items():
-            trailing[window] = state.snapshot()
+        for window in needed_trailing:
+            trailing[int(window)] = self._trailing_sum(hour_idx, int(window))
         recency = np.nan if self.last_seen_hour is None else float(hour_idx - self.last_seen_hour)
         day = (self.day_imps, self.day_clicks)
         yday = (self.prev_day_imps, self.prev_day_clicks)
@@ -139,8 +139,15 @@ class _EntityState:
 
     def add_counts(self, hour_idx: int, day_idx: int, imps: float, clicks: float) -> None:
         self._ensure_day(day_idx)
-        for state in self.windows.values():
-            state.add(hour_idx, imps, clicks)
+        self.hours.append(int(hour_idx))
+        self.imps.append(float(imps))
+        self.clicks.append(float(clicks))
+        if self.cum_imps:
+            self.cum_imps.append(float(self.cum_imps[-1]) + float(imps))
+            self.cum_clicks.append(float(self.cum_clicks[-1]) + float(clicks))
+        else:
+            self.cum_imps.append(float(imps))
+            self.cum_clicks.append(float(clicks))
         self.day_imps += imps
         self.day_clicks += clicks
         if self.event_windows:
@@ -228,7 +235,9 @@ def _needed_trailing_windows(cfg: TimeAggConfig) -> set[int]:
     return needed
 
 
-def add_time_agg_features(df: pd.DataFrame, cfg: TimeAggConfig | None = None) -> tuple[pd.DataFrame, list[str]]:
+def add_time_agg_features(
+    df: pd.DataFrame, cfg: TimeAggConfig | None = None, inplace: bool = False
+) -> tuple[pd.DataFrame, list[str]]:
     if cfg is None:
         cfg = TimeAggConfig()
     if not cfg.entities:
@@ -255,7 +264,19 @@ def add_time_agg_features(df: pd.DataFrame, cfg: TimeAggConfig | None = None) ->
 
     n = len(df)
     click_arr = df["click"].to_numpy(dtype=np.float32, copy=False)
-    entity_arrays = {col: df[col].to_numpy(copy=False) for col in cfg.entities}
+    entity_arrays: dict[str, np.ndarray] = {}
+    for col in cfg.entities:
+        s = df[col]
+        if ptypes.is_categorical_dtype(s):
+            entity_arrays[col] = s.cat.codes.to_numpy(dtype=np.int32, copy=False)
+        elif ptypes.is_object_dtype(s) or ptypes.is_string_dtype(s):
+            codes, _ = pd.factorize(s, sort=False)
+            entity_arrays[col] = codes.astype(np.int32, copy=False)
+        elif ptypes.is_integer_dtype(s):
+            entity_arrays[col] = s.to_numpy(dtype=np.int32, copy=False)
+        else:
+            codes, _ = pd.factorize(s, sort=False)
+            entity_arrays[col] = codes.astype(np.int32, copy=False)
 
     feature_arrays: dict[str, np.ndarray] = {}
     default_ctr = float(cfg.alpha / (cfg.alpha + cfg.beta))
@@ -273,11 +294,20 @@ def add_time_agg_features(df: pd.DataFrame, cfg: TimeAggConfig | None = None) ->
     pending: dict[str, dict[Any, list[float]]] = {col: {} for col in cfg.entities}
 
     needed_trailing = _needed_trailing_windows(cfg)
+    max_window = int(max(needed_trailing)) if needed_trailing else 1
+    needed_trailing_sorted = tuple(sorted(int(w) for w in needed_trailing))
 
     def _new_state() -> _EntityState:
-        windows = {w: _WindowState(w) for w in needed_trailing}
         event_windows = {int(n): _EventWindowState(int(n)) for n in cfg.event_windows} if cfg.event_windows else None
-        return _EntityState(windows=windows, event_windows=event_windows)
+        return _EntityState(
+            max_window=max_window,
+            hours=array("i"),
+            imps=array("f"),
+            clicks=array("f"),
+            cum_imps=array("f"),
+            cum_clicks=array("f"),
+            event_windows=event_windows,
+        )
 
     def flush(hour: int, day: int) -> None:
         for col in cfg.entities:
@@ -316,7 +346,7 @@ def add_time_agg_features(df: pd.DataFrame, cfg: TimeAggConfig | None = None) ->
                 state = _new_state()
                 col_states[key] = state
 
-            trailing, recency, day_stats, yday_stats, event_stats = state.snapshot(hour, day)
+            trailing, recency, day_stats, yday_stats, event_stats = state.snapshot(hour, day, needed_trailing_sorted)
             feature_arrays[f"{col}__recency_hours"][idx] = np.float32(recency)
 
             gap = int(cfg.gap_hours)
@@ -383,10 +413,7 @@ def add_time_agg_features(df: pd.DataFrame, cfg: TimeAggConfig | None = None) ->
     if current_hour is not None and current_day is not None:
         flush(int(current_hour), int(current_day))
 
-    output = df.copy()
-    new_cols: list[str] = []
-    for name, values in feature_arrays.items():
-        output[name] = values
-        new_cols.append(name)
-
+    new_cols_df = pd.DataFrame(feature_arrays)
+    new_cols = list(new_cols_df.columns)
+    output = pd.concat([df if inplace else df.copy(), new_cols_df], axis=1)
     return output, new_cols

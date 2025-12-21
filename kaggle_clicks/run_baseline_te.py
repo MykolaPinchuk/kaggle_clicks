@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import gc
 from datetime import datetime
 
 import numpy as np
@@ -11,7 +12,7 @@ import xgboost as xgb
 
 from kaggle_clicks.metrics import compute_binary_metrics
 from kaggle_clicks.paths import get_paths
-from kaggle_clicks.sampling import deterministic_pct_mask
+from kaggle_clicks.sampling import deterministic_frac_mask, deterministic_pct_mask
 from kaggle_clicks.te import TEConfig, add_time_target_encoding
 from kaggle_clicks.time_agg import TimeAggConfig, add_time_agg_features
 from kaggle_clicks.time_utils import (
@@ -26,6 +27,14 @@ def _fmt_ts(ts: pd.Timestamp | None) -> str:
     if ts is None or pd.isna(ts):
         return "NA"
     return pd.Timestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def _format_sample_label(sample_pct: int, sample_frac: float | None) -> str:
+    if sample_frac is None:
+        return f"{sample_pct}%"
+    pct = sample_frac * 100.0
+    label = f"{pct:.4f}".rstrip("0").rstrip(".")
+    return f"{label}%"
 
 
 def _split_summary(df: pd.DataFrame, splits: dict[str, pd.Index]) -> list[tuple[str, int, str, str]]:
@@ -54,7 +63,8 @@ def _write_report(
     lines.append(f"# Run Report: `{run_tag}`")
     lines.append("")
     lines.append("## Data")
-    lines.append(f"- Sample fraction: {args.sample_pct}% (deterministic hash on `id`)")
+    sample_label = _format_sample_label(args.sample_pct, getattr(args, "sample_frac", None))
+    lines.append(f"- Sample fraction: {sample_label} (deterministic hash on `id`)")
     lines.append(f"- Rows: {len(df):,}")
     if getattr(args, "rolling_tail_fold", None):
         lines.append(f"- Split mode: rolling tail (fold {args.rolling_tail_fold})")
@@ -122,7 +132,9 @@ def _write_report(
         f.write(content)
 
 
-def _load_or_make_sample(train_csv: str, sample_pct: int, out_parquet: str) -> pd.DataFrame:
+def _load_or_make_sample(
+    train_csv: str, sample_pct: int, sample_frac: float | None, out_parquet: str
+) -> pd.DataFrame:
     p = os.path.abspath(out_parquet)
     if os.path.exists(p):
         return pd.read_parquet(p)
@@ -131,7 +143,10 @@ def _load_or_make_sample(train_csv: str, sample_pct: int, out_parquet: str) -> p
     for chunk in pd.read_csv(train_csv, chunksize=500_000):
         if "id" not in chunk.columns:
             raise ValueError("Expected 'id' column in train.csv for deterministic sampling.")
-        mask = deterministic_pct_mask(chunk["id"], pct=sample_pct)
+        if sample_frac is not None:
+            mask = deterministic_frac_mask(chunk["id"], frac=float(sample_frac))
+        else:
+            mask = deterministic_pct_mask(chunk["id"], pct=sample_pct)
         if mask.any():
             chunks.append(chunk.loc[mask])
     if not chunks:
@@ -146,6 +161,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train-csv", default=str(get_paths().data_raw / "train.csv"))
     ap.add_argument("--sample-pct", type=int, default=1)
+    ap.add_argument(
+        "--sample-frac",
+        type=float,
+        default=None,
+        help="Optional fractional sample in (0,1], e.g. 0.001 for 0.1%%. If set, overrides sample-pct.",
+    )
     ap.add_argument("--sample-parquet", default=str(get_paths().data_interim / "train_sample.parquet"))
     ap.add_argument("--m", type=float, default=100.0, help="TE smoothing strength (larger = more shrinkage).")
     ap.add_argument(
@@ -218,8 +239,14 @@ def main() -> int:
     if not os.path.exists(args.train_csv):
         raise SystemExit(f"Missing data file: {args.train_csv} (place it at data/raw/train.csv)")
 
-    raw = _load_or_make_sample(args.train_csv, args.sample_pct, args.sample_parquet)
+    raw = _load_or_make_sample(args.train_csv, args.sample_pct, args.sample_frac, args.sample_parquet)
     df = add_time_columns(raw, hour_col="hour").sort_values("hour_dt").reset_index(drop=True)
+    df_report = df[["hour_dt"]].copy()
+    del raw
+    gc.collect()
+
+    # Drop unused large columns early (reduces memory pressure on large samples).
+    df = df.drop(columns=["id", "hour"], errors="ignore")
 
     if args.rolling_tail_fold:
         folds = make_rolling_tail_folds_by_day(df)
@@ -232,10 +259,24 @@ def main() -> int:
     drop_cols = {"id", "hour", "hour_dt", "day", "hour_of_day", label_col}
     cat_cols = [c for c in df.columns if c not in drop_cols]
 
-    fe = add_time_target_encoding(df, cat_cols=cat_cols, label_col=label_col, cfg=TEConfig(m=args.m))
+    # Convert categorical keys to compact int codes to reduce memory (and usually speed up groupby).
+    for col in cat_cols:
+        if df[col].dtype == object:
+            codes, _ = pd.factorize(df[col], sort=False)
+            df[col] = codes.astype(np.int32, copy=False)
+
+    fe = add_time_target_encoding(df, cat_cols=cat_cols, label_col=label_col, cfg=TEConfig(m=args.m), inplace=True)
+    # Keep only hour_dt for reporting/export; release large categorical columns ASAP.
+    df = df_report
+    del df_report
+    gc.collect()
 
     time_agg_cols: list[str] = []
     if args.time_agg_entities:
+        # Reduce peak memory in time-agg: it only needs the configured entity columns + time/label.
+        drop_cat_cols = [c for c in cat_cols if c not in set(args.time_agg_entities)]
+        if drop_cat_cols:
+            fe = fe.drop(columns=drop_cat_cols, errors="ignore")
         fe, time_agg_cols = add_time_agg_features(
             fe,
             cfg=TimeAggConfig(
@@ -248,18 +289,45 @@ def main() -> int:
                 add_calendar_windows=bool(args.time_agg_calendar),
                 event_windows=tuple(args.time_agg_event_windows),
             ),
+            inplace=True,
         )
 
     te_cols = [f"{c}__te" for c in cat_cols] + [f"{c}__hist_imps" for c in cat_cols]
     base_cols = ["hour_of_day", "prior_ctr"]
     feature_cols = base_cols + te_cols + time_agg_cols
 
-    X_train = fe.loc[splits["train"], feature_cols].astype(np.float32)
-    y_train = fe.loc[splits["train"], label_col].to_numpy(dtype=np.int8, copy=False)
-    X_val = fe.loc[splits["val"], feature_cols].astype(np.float32)
-    y_val = fe.loc[splits["val"], label_col].to_numpy(dtype=np.int8, copy=False)
-    X_test = fe.loc[splits["test"], feature_cols].astype(np.float32)
-    y_test = fe.loc[splits["test"], label_col].to_numpy(dtype=np.int8, copy=False)
+    # Reduce memory: drop large original categorical columns before building dense matrices.
+    # Avoid copying the full feature matrix here; we only materialize the dense float32 array below.
+    fe = fe[[label_col, *feature_cols]]
+    gc.collect()
+
+    X_all = np.empty((len(fe), len(feature_cols)), dtype=np.float32)
+    for j, col in enumerate(feature_cols):
+        X_all[:, j] = fe[col].to_numpy(dtype=np.float32, copy=False)
+    y_all = fe[label_col].to_numpy(dtype=np.int8, copy=False)
+    del fe
+    gc.collect()
+
+    def _as_slice_or_idx(idx: pd.Index) -> slice | np.ndarray:
+        arr = idx.to_numpy(dtype=np.int64, copy=False)
+        if arr.size == 0:
+            return slice(0, 0)
+        if arr[0] == 0 and np.all(arr[1:] == arr[:-1] + 1):
+            return slice(int(arr[0]), int(arr[-1]) + 1)
+        if np.all(arr[1:] == arr[:-1] + 1):
+            return slice(int(arr[0]), int(arr[-1]) + 1)
+        return arr
+
+    tr_sel = _as_slice_or_idx(splits["train"])
+    va_sel = _as_slice_or_idx(splits["val"])
+    te_sel = _as_slice_or_idx(splits["test"])
+
+    X_train = X_all[tr_sel]
+    y_train = y_all[tr_sel]
+    X_val = X_all[va_sel]
+    y_val = y_all[va_sel]
+    X_test = X_all[te_sel]
+    y_test = y_all[te_sel]
 
     model = xgb.XGBClassifier(
         n_estimators=args.n_estimators,

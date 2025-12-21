@@ -32,6 +32,7 @@ def add_time_target_encoding(
     cat_cols: list[str],
     label_col: str = "click",
     cfg: TEConfig | None = None,
+    inplace: bool = False,
 ) -> pd.DataFrame:
     if cfg is None:
         cfg = TEConfig()
@@ -41,7 +42,7 @@ def add_time_target_encoding(
     prior_by_hour = _global_prior_by_hour(df, label_col=label_col, cfg=cfg)
     prior_for_rows = df["hour_dt"].map(prior_by_hour).astype("float32")
 
-    out = df.copy()
+    out = df if inplace else df.copy()
     out["prior_ctr"] = prior_for_rows
 
     for col in cat_cols:
