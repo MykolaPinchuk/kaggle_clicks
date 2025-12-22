@@ -34,3 +34,15 @@ All three runs below use the same model params (`n_estimators=800`, `learning_ra
 - R3 (TE + A3 trailing `{1,6,24,48,168}`): `runs/20251218_040020_familyA_5pct_R3_A3trailing/report.md`
 - R9 (TE + A3 trailing + event last50imps): `runs/20251218_041038_familyA_5pct_R9_A3_event50/report.md`
 
+## Paper grid (10% sample): 20×2 full grid (A.1×A.2, Fold A/B)
+
+Completed sweep (40 runs total; rolling-tail Fold A/B):
+
+- `runs/sweeps/20251221_183006_paper_full_grid_10pct_s10pct_tecache/summary.md`
+
+Notes:
+- This sweep was run with a precomputed TE cache to reduce RAM spikes:
+  - `data/interim/te_cache/train_sample_10pct_te_m100.parquet`
+- The previously failing `A4_gap1` runs are completed in this sweep:
+  - `runs/20251221_183006_paper_full_grid_10pct_A4_gap1_foldA/report.md`
+  - `runs/20251221_183007_paper_full_grid_10pct_A4_gap1_foldB/report.md`

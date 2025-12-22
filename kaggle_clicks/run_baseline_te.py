@@ -170,6 +170,11 @@ def main() -> int:
     ap.add_argument("--sample-parquet", default=str(get_paths().data_interim / "train_sample.parquet"))
     ap.add_argument("--m", type=float, default=100.0, help="TE smoothing strength (larger = more shrinkage).")
     ap.add_argument(
+        "--te-parquet",
+        default=None,
+        help="Optional cached TE parquet produced by `python -m kaggle_clicks.precompute_te` (skips TE recomputation).",
+    )
+    ap.add_argument(
         "--rolling-tail-fold",
         choices=["A", "B"],
         default=None,
@@ -256,29 +261,96 @@ def main() -> int:
     assert_strict_oot(df, splits)
 
     label_col = "click"
-    drop_cols = {"id", "hour", "hour_dt", "day", "hour_of_day", label_col}
-    cat_cols = [c for c in df.columns if c not in drop_cols]
+    te_parquet = getattr(args, "te_parquet", None)
+    using_te_cache = bool(te_parquet)
+    df_entities: pd.DataFrame | None = None
 
-    # Convert categorical keys to compact int codes to reduce memory (and usually speed up groupby).
-    for col in cat_cols:
-        if df[col].dtype == object:
-            codes, _ = pd.factorize(df[col], sort=False)
-            df[col] = codes.astype(np.int32, copy=False)
+    if using_te_cache:
+        if not os.path.exists(str(te_parquet)):
+            raise SystemExit(f"--te-parquet not found: {te_parquet}")
+        te_df = pd.read_parquet(str(te_parquet))
+        if "prior_ctr" not in te_df.columns:
+            raise SystemExit(f"--te-parquet missing required column 'prior_ctr': {te_parquet}")
 
-    fe = add_time_target_encoding(df, cat_cols=cat_cols, label_col=label_col, cfg=TEConfig(m=args.m), inplace=True)
-    # Keep only hour_dt for reporting/export; release large categorical columns ASAP.
-    df = df_report
-    del df_report
-    gc.collect()
+        if "row_id" in te_df.columns:
+            te_df = te_df.sort_values("row_id").reset_index(drop=True)
+            if int(te_df["row_id"].iloc[0]) != 0 or int(te_df["row_id"].iloc[-1]) != len(te_df) - 1:
+                raise SystemExit(f"--te-parquet row_id must be 0..n-1: {te_parquet}")
+
+        if len(te_df) != len(df):
+            raise SystemExit(f"--te-parquet length {len(te_df)} != data length {len(df)}")
+
+        if "hour_dt" in te_df.columns:
+            if not (te_df["hour_dt"].to_numpy() == df["hour_dt"].to_numpy()).all():
+                raise SystemExit("--te-parquet hour_dt does not match sample ordering; regenerate cache for this sample.")
+
+        te_feature_cols = [c for c in te_df.columns if c not in {"row_id", "hour_dt"}]
+        # Infer cat_cols ordering from TE column naming.
+        cat_cols: list[str] = []
+        for c in te_feature_cols:
+            if c.endswith("__te") or c.endswith("__hist_imps"):
+                base = c.split("__", 1)[0]
+                if base not in cat_cols:
+                    cat_cols.append(base)
+
+        te_cols: list[str] = []
+        for c in cat_cols:
+            for suffix in ("__te", "__hist_imps"):
+                name = f"{c}{suffix}"
+                if name in te_df.columns:
+                    te_cols.append(name)
+
+        if args.time_agg_entities:
+            # Prepare a minimal frame for time-agg aligned to the same row order.
+            for ent in args.time_agg_entities:
+                if ent in df.columns and df[ent].dtype == object:
+                    codes, _ = pd.factorize(df[ent], sort=False)
+                    df[ent] = codes.astype(np.int32, copy=False)
+            df_entities = df[["hour_dt", label_col, *args.time_agg_entities]].copy()
+
+        # Build minimal feature frame: label + base cols + TE cols (avoid keeping raw categorical columns).
+        fe = pd.DataFrame(
+            {
+                label_col: df[label_col].to_numpy(dtype=np.int8, copy=False),
+                "hour_of_day": df["hour_of_day"].to_numpy(dtype=np.float32, copy=False),
+                "prior_ctr": te_df["prior_ctr"].to_numpy(dtype=np.float32, copy=False),
+            }
+        )
+        for col in te_cols:
+            fe[col] = te_df[col].to_numpy(dtype=np.float32, copy=False)
+
+        # Keep only hour_dt for reporting/export; release large categorical columns ASAP.
+        df = df_report
+        del df_report
+        del te_df
+        gc.collect()
+    else:
+        drop_cols = {"id", "hour", "hour_dt", "day", "hour_of_day", label_col}
+        cat_cols = [c for c in df.columns if c not in drop_cols]
+
+        # Convert categorical keys to compact int codes to reduce memory (and usually speed up groupby).
+        for col in cat_cols:
+            if df[col].dtype == object:
+                codes, _ = pd.factorize(df[col], sort=False)
+                df[col] = codes.astype(np.int32, copy=False)
+
+        if args.time_agg_entities:
+            df_entities = df[["hour_dt", label_col, *args.time_agg_entities]].copy()
+
+        fe = add_time_target_encoding(df, cat_cols=cat_cols, label_col=label_col, cfg=TEConfig(m=args.m), inplace=True)
+        te_cols = [f"{c}__te" for c in cat_cols] + [f"{c}__hist_imps" for c in cat_cols]
+
+        # Keep only hour_dt for reporting/export; release large categorical columns ASAP.
+        df = df_report
+        del df_report
+        gc.collect()
 
     time_agg_cols: list[str] = []
     if args.time_agg_entities:
-        # Reduce peak memory in time-agg: it only needs the configured entity columns + time/label.
-        drop_cat_cols = [c for c in cat_cols if c not in set(args.time_agg_entities)]
-        if drop_cat_cols:
-            fe = fe.drop(columns=drop_cat_cols, errors="ignore")
-        fe, time_agg_cols = add_time_agg_features(
-            fe,
+        if df_entities is None:
+            raise RuntimeError("Internal error: expected df_entities for time aggregation.")
+        ta_out, time_agg_cols = add_time_agg_features(
+            df_entities,
             cfg=TimeAggConfig(
                 entities=tuple(args.time_agg_entities),
                 windows=tuple(args.time_agg_windows),
@@ -291,8 +363,11 @@ def main() -> int:
             ),
             inplace=True,
         )
+        for col in time_agg_cols:
+            fe[col] = ta_out[col].to_numpy(dtype=np.float32, copy=False)
+        del df_entities, ta_out
+        gc.collect()
 
-    te_cols = [f"{c}__te" for c in cat_cols] + [f"{c}__hist_imps" for c in cat_cols]
     base_cols = ["hour_of_day", "prior_ctr"]
     feature_cols = base_cols + te_cols + time_agg_cols
 

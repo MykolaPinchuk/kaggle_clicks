@@ -44,6 +44,16 @@ To change repo-specific notes, edit local_context_enrichments/local_agents.md in
 
 ---
 
+```markdown
+# Paper Writing Profile
+
+- These are instructions specific to projects where the main deliverable is writing a paper. Use them to prioritize clear scientific narrative, rigorous methodology, and reproducible results.
+- paper_draft is a directory where you should put your tables, figures, and any supplementary materials related to the paper. Its subdirs should be names v1, v2 etc. for each version of the draft. If unsure, clarify from human which version we are on.
+
+```
+
+---
+
 # Repo-Specific Notes
 
 There are no repo-specific notes yet.

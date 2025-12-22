@@ -165,6 +165,7 @@ def _memory_gate_ok(
     ram_budget_gib: float | None,
     min_mem_available_gib: float,
     min_swap_free_gib: float,
+    mem_safety_margin_gib: float,
 ) -> tuple[bool, dict[str, float]]:
     """
     Decide whether it is safe to launch another run based on current system memory.
@@ -188,7 +189,7 @@ def _memory_gate_ok(
     if ram_budget_gib is not None and mem_total > 0:
         budget_headroom = max(0.0, mem_total - float(ram_budget_gib))
 
-    threshold = max(float(min_mem_available_gib), float(budget_headroom))
+    threshold = max(float(min_mem_available_gib), float(budget_headroom) + float(mem_safety_margin_gib))
     ok = mem_avail >= threshold and swap_free >= float(min_swap_free_gib)
     return ok, {
         "mem_total_gib": mem_total,
@@ -196,6 +197,7 @@ def _memory_gate_ok(
         "swap_free_gib": swap_free,
         "threshold_gib": float(threshold),
         "budget_headroom_gib": float(budget_headroom),
+        "mem_safety_margin_gib": float(mem_safety_margin_gib),
     }
 
 
@@ -284,6 +286,11 @@ def main() -> int:
     ap.add_argument("--sample-pct", type=int, default=1)
     ap.add_argument("--sample-frac", type=float, default=None)
     ap.add_argument("--sample-parquet", default=None)
+    ap.add_argument(
+        "--te-parquet",
+        default=None,
+        help="Optional cached TE parquet to pass through to each run (--te-parquet in run_baseline_te).",
+    )
     ap.add_argument("--sweep-tag", default="familyA_full_grid")
     ap.add_argument(
         "--sweep-dir",
@@ -321,6 +328,12 @@ def main() -> int:
         default=1.0,
         help="Require at least this much SwapFree before launching another run (GiB).",
     )
+    ap.add_argument(
+        "--mem-safety-margin-gib",
+        type=float,
+        default=6.0,
+        help="Extra MemAvailable cushion to reduce risk of system OOM killing other apps (GiB).",
+    )
 
     ap.add_argument("--n-estimators", type=int, default=800)
     ap.add_argument("--learning-rate", type=float, default=0.05)
@@ -346,6 +359,7 @@ def main() -> int:
     ram_budget_gib = float(args.ram_budget_gib) if args.ram_budget_gib is not None else None
     min_mem_available_gib = max(0.0, float(args.min_mem_available_gib))
     min_swap_free_gib = max(0.0, float(args.min_swap_free_gib))
+    mem_safety_margin_gib = max(0.0, float(args.mem_safety_margin_gib))
 
     if args.sample_parquet is None:
         if args.sample_frac is not None:
@@ -374,6 +388,7 @@ def main() -> int:
         "sample_pct": int(args.sample_pct),
         "sample_frac": args.sample_frac,
         "sample_parquet": sample_parquet,
+        "te_parquet": args.te_parquet,
         "train_csv": args.train_csv,
         "sweep_dir": str(sweep_dir),
         "model_params": {
@@ -394,6 +409,7 @@ def main() -> int:
         "ram_budget_gib": ram_budget_gib,
         "min_mem_available_gib": float(min_mem_available_gib),
         "min_swap_free_gib": float(min_swap_free_gib),
+        "mem_safety_margin_gib": float(mem_safety_margin_gib),
         "specs": [{"run_id": s.run_id, "description": s.description, "cli_args": list(s.cli_args)} for s in specs],
     }
     (sweep_dir / "sweep_config.json").write_text(json.dumps(sweep_config, indent=2, sort_keys=True))
@@ -438,6 +454,8 @@ def main() -> int:
             str(int(args.n_jobs)),
             *spec.cli_args,
         ]
+        if args.te_parquet:
+            cmd += ["--te-parquet", str(args.te_parquet)]
         if args.sample_frac is not None:
             cmd += ["--sample-frac", str(float(args.sample_frac))]
         if fold_id:
@@ -574,6 +592,7 @@ def main() -> int:
                         ram_budget_gib=ram_budget_gib,
                         min_mem_available_gib=min_mem_available_gib,
                         min_swap_free_gib=min_swap_free_gib,
+                        mem_safety_margin_gib=mem_safety_margin_gib,
                     )
                     if not mem_ok:
                         ts_now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -581,7 +600,8 @@ def main() -> int:
                             f"[{ts_now}] PAUSE_MEM avail={mem_stats['mem_available_gib']:.2f}GiB "
                             f"swap_free={mem_stats['swap_free_gib']:.2f}GiB "
                             f"threshold={mem_stats['threshold_gib']:.2f}GiB "
-                            f"(budget_headroom={mem_stats['budget_headroom_gib']:.2f}GiB)\n"
+                            f"(budget_headroom={mem_stats['budget_headroom_gib']:.2f}GiB "
+                            f"margin={mem_stats['mem_safety_margin_gib']:.2f}GiB)\n"
                         )
                         sweep_log.flush()
                         return

@@ -64,6 +64,17 @@ Minimal “know these files” set:
 
 - `python -m kaggle_clicks.run_baseline_te --sample-pct 1 --run-tag my_test`
 
+Environment note:
+- The checked-in `.venv/` may be stale/missing deps; if `python -m kaggle_clicks...` fails on imports (e.g. `xgboost`, `pyarrow`, `sklearn`), use the system `python` (pyenv) or install deps into the active env.
+
+### A0) Precompute TE once (recommended for sweeps)
+
+If you plan to run many comparable specs on the same sample parquet, precompute TE once and reuse it across all runs:
+
+- `python -m kaggle_clicks.precompute_te --sample-parquet data/interim/train_sample_10pct.parquet --out-parquet data/interim/te_cache/train_sample_10pct_te_m100.parquet --m 100`
+
+Then pass it to runs/sweeps via `--te-parquet ...` to skip TE recomputation.
+
 Useful options:
 - Rolling-tail folds: `--rolling-tail-fold A` or `--rolling-tail-fold B`
 - Export predictions: `--export-preds` (writes `preds_val.parquet` and `preds_test.parquet`)
@@ -75,6 +86,7 @@ Useful options:
 
 Useful options:
 - Rolling-tail folds across runs: `--rolling-tail`
+- Reuse TE cache: `--te-parquet data/interim/te_cache/<...>.parquet`
 - Export predictions for inference: `--export-preds`
 - Enable Phase 2 (shapes): `--enable-phase2 --phase2-base-windows 1 6 24 48 168`
 
@@ -86,6 +98,7 @@ Useful options:
 
 - Full grid (20 specs × Fold A/B = 40 runs):
   - `python -m kaggle_clicks.run_sweep_family_a_full_grid --sample-pct 10 --sample-parquet data/interim/train_sample_10pct.parquet --sweep-tag paper_full_grid_10pct --rolling-tail --export-preds --max-wall-seconds 57600 --per-run-timeout-seconds 7200`
+  - With TE cache: add `--te-parquet data/interim/te_cache/train_sample_10pct_te_m100.parquet`
 - Monitor:
   - progress: `runs/sweeps/<...>/sweep.log`
   - per-run stdout/stderr: `runs/sweeps/<...>/logs/`
@@ -106,6 +119,8 @@ Note: For long runs, avoid running inside a VSCode/Chrome-integrated terminal if
 - For unattended runs, use the built-in memory throttle:
   - `--ram-budget-gib 25 --max-parallel-runs 2 --n-jobs 1`
   - The sweep log records `PAUSE_MEM ...` lines when it temporarily stops launching new runs to avoid OOM/swap thrash.
+- If you want to keep other apps stable (e.g. Chrome), increase the cushion:
+  - `--mem-safety-margin-gib 8` (default is `6`)
 
 ## 7) Current state / handoff pointers
 

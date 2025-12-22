@@ -152,6 +152,13 @@ Expected overhead:
 - DeLong is negligible.
 - Bootstrap can be minutes, but if we only do it for a limited set of comparisons, total overhead stays well under 2×.
 
+### 4.4 Practical note: TE cache (recommended for large sweeps)
+
+For large sweeps on the same sample parquet, precompute TE once and reuse it to reduce RAM spikes and total wall time:
+
+- `python -m kaggle_clicks.precompute_te --sample-parquet data/interim/train_sample_10pct.parquet --out-parquet data/interim/te_cache/train_sample_10pct_te_m100.parquet --m 100`
+- Then pass `--te-parquet data/interim/te_cache/train_sample_10pct_te_m100.parquet` through sweep runners.
+
 ## 5) Implementation checklist (for the next agent)
 
 ### 5.1 Add “rolling tail fold” support

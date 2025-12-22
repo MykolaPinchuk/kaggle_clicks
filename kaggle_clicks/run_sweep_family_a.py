@@ -224,6 +224,11 @@ def main() -> int:
     ap.add_argument("--train-csv", default=str(get_paths().data_raw / "train.csv"))
     ap.add_argument("--sample-pct", type=int, default=1)
     ap.add_argument("--sample-parquet", default=None)
+    ap.add_argument(
+        "--te-parquet",
+        default=None,
+        help="Optional cached TE parquet to pass through to each run (--te-parquet in run_baseline_te).",
+    )
     ap.add_argument("--sweep-tag", default="familyA_sweep")
     ap.add_argument("--max-wall-seconds", type=int, default=280, help="Hard cap to keep the full command <5 minutes.")
 
@@ -274,6 +279,7 @@ def main() -> int:
         "sweep_tag": args.sweep_tag,
         "sample_pct": int(args.sample_pct),
         "sample_parquet": sample_parquet,
+        "te_parquet": args.te_parquet,
         "train_csv": args.train_csv,
         "model_params": {
             "n_estimators": int(args.n_estimators),
@@ -339,6 +345,8 @@ def main() -> int:
                     str(int(args.n_jobs)),
                     *spec.cli_args,
                 ]
+                if args.te_parquet:
+                    cmd += ["--te-parquet", str(args.te_parquet)]
                 if fold_id:
                     cmd += ["--rolling-tail-fold", fold_id]
                 if args.export_preds:
