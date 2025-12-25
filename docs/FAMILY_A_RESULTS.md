@@ -46,3 +46,13 @@ Notes:
 - The previously failing `A4_gap1` runs are completed in this sweep:
   - `runs/20251221_183006_paper_full_grid_10pct_A4_gap1_foldA/report.md`
   - `runs/20251221_183007_paper_full_grid_10pct_A4_gap1_foldB/report.md`
+
+## Paper grid (10% sample, no TE): full grid + inference
+
+Sweep rerun with `--no-te --export-preds` to enable paired inference across all 40 runs:
+
+- `runs/sweeps/20251225_161654_paper_full_grid_10pct_noTE_with_preds_s10pct/summary.md`
+
+Paper-ready consolidated artifacts (recommended entrypoint):
+
+- `paper_draft/v1/README.md`

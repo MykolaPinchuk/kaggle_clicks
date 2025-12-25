@@ -23,9 +23,11 @@ We train CTR models on Avazu with **strict out-of-time (OOT)** evaluation. Featu
 6. `docs/EDA_REPORT.md` — dataset properties relevant to modeling (drift, long tails, cold-start).
 
 Optional historical context:
-- `logs/agents/agent_logs/` — short changelogs per agent iteration.
+- `logs/agents/agent_logs/` — short changelogs per agent iteration. Avoid reading anything except the last entry.
 
-## 3) Code entrypoints (what to open next)
+If you are at the stage of reviewing results for a paper draft, do not read code and code-related docs. Read only paper_draft directory. Read more files only if actually needed.
+
+## 3) Code entrypoints (what to open next if need to run code)
 
 Minimal “know these files” set:
 
@@ -125,12 +127,31 @@ Note: For long runs, avoid running inside a VSCode/Chrome-integrated terminal if
 ## 7) Current state / handoff pointers
 
 - Latest “what to do next” for the full paper grid is documented in `logs/agents/agent_logs/2025-12-20T20-49_codex.md`.
+- v1 paper artifacts are consolidated under `paper_draft/v1/README.md` (recommended entrypoint for writing).
 - Inference utilities live in:
   - `kaggle_clicks/inference_auc.py` (paired DeLong for ROC-AUC)
   - `kaggle_clicks/inference_bootstrap.py` (paired block bootstrap for PR-AUC)
   - `kaggle_clicks/postprocess_sweep_inference.py` (sweep → `inference_vs_baseline.csv`)
+  - `kaggle_clicks/postprocess_paper_grid_contrasts.py` (shape-vs-trailing contrasts within a length set)
+  - `kaggle_clicks/postprocess_paper_grid_te_vs_note.py` (TE vs no-TE comparisons)
 
-## 7) Agent handoff checklist (end of session)
+## 8) Paper-writing agent quickstart (keep context small)
+
+If your job is to write a preliminary paper (and not to re-run experiments), avoid reading raw sweep logs / run dirs.
+
+Minimal read list:
+- `paper_draft/v1/README.md` (manifest + where to look)
+- `paper_draft/v1/10pct_paper_grid/master_results.md` (TE main table)
+- `paper_draft/v1/10pct_paper_grid_noTE/master_results.md` (no-TE main table)
+- `paper_draft/v1/10pct_te_lift/te_vs_timeagg_summary.md` (headline TE-only → time-agg lift)
+- `paper_draft/v1/eda/EDA_REPORT.md` (dataset drift + long-tail context)
+
+Optional:
+- `paper_draft/v1/10pct_paper_grid/contrasts_vs_trailing_test.md`
+- `paper_draft/v1/10pct_paper_grid_noTE/contrasts_vs_trailing_test.md`
+- `paper_draft/v1/combined/te_vs_note_summary.md`
+
+## 9) Agent handoff checklist (end of session)
 
 Before terminating:
 
