@@ -72,3 +72,25 @@ def add_time_target_encoding(
         out[f"{col}__hist_imps"] = np.log1p(cum_imps).astype("float32")
 
     return out
+
+
+def add_time_prior_ctr(
+    df: pd.DataFrame,
+    label_col: str = "click",
+    cfg: TEConfig | None = None,
+    inplace: bool = False,
+) -> pd.DataFrame:
+    """
+    Add only the time-aware global prior CTR feature (`prior_ctr`) without per-category TE columns.
+
+    This is useful for running time-aggregation-only experiments while keeping the same online-safe prior.
+    """
+    if cfg is None:
+        cfg = TEConfig()
+    if "hour_dt" not in df.columns:
+        raise ValueError("df must contain 'hour_dt' (use add_time_columns first).")
+    prior_by_hour = _global_prior_by_hour(df, label_col=label_col, cfg=cfg)
+    prior_for_rows = df["hour_dt"].map(prior_by_hour).astype("float32")
+    out = df if inplace else df.copy()
+    out["prior_ctr"] = prior_for_rows
+    return out

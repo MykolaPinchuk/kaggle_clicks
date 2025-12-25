@@ -344,6 +344,7 @@ def main() -> int:
     ap.add_argument("--min-child-weight", type=float, default=10.0)
     ap.add_argument("--n-jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--m", type=float, default=100.0, help="TE smoothing strength.")
+    ap.add_argument("--no-te", action="store_true", help="Pass --no-te to each run (time-agg-only ablation).")
 
     ap.add_argument(
         "--entities",
@@ -436,6 +437,11 @@ def main() -> int:
             run_tag,
             "--m",
             str(float(args.m)),
+            *(
+                ["--no-te"]
+                if bool(getattr(args, "no_te", False))
+                else []
+            ),
             "--n-estimators",
             str(int(args.n_estimators)),
             "--learning-rate",

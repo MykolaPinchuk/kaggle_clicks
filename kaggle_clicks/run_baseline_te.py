@@ -13,7 +13,7 @@ import xgboost as xgb
 from kaggle_clicks.metrics import compute_binary_metrics
 from kaggle_clicks.paths import get_paths
 from kaggle_clicks.sampling import deterministic_frac_mask, deterministic_pct_mask
-from kaggle_clicks.te import TEConfig, add_time_target_encoding
+from kaggle_clicks.te import TEConfig, add_time_prior_ctr, add_time_target_encoding
 from kaggle_clicks.time_agg import TimeAggConfig, add_time_agg_features
 from kaggle_clicks.time_utils import (
     add_time_columns,
@@ -169,6 +169,7 @@ def main() -> int:
     )
     ap.add_argument("--sample-parquet", default=str(get_paths().data_interim / "train_sample.parquet"))
     ap.add_argument("--m", type=float, default=100.0, help="TE smoothing strength (larger = more shrinkage).")
+    ap.add_argument("--no-te", action="store_true", help="If set, do not include per-category TE features.")
     ap.add_argument(
         "--te-parquet",
         default=None,
@@ -268,7 +269,10 @@ def main() -> int:
     if using_te_cache:
         if not os.path.exists(str(te_parquet)):
             raise SystemExit(f"--te-parquet not found: {te_parquet}")
-        te_df = pd.read_parquet(str(te_parquet))
+        if args.no_te:
+            te_df = pd.read_parquet(str(te_parquet), columns=["row_id", "hour_dt", "prior_ctr"])
+        else:
+            te_df = pd.read_parquet(str(te_parquet))
         if "prior_ctr" not in te_df.columns:
             raise SystemExit(f"--te-parquet missing required column 'prior_ctr': {te_parquet}")
 
@@ -285,7 +289,7 @@ def main() -> int:
                 raise SystemExit("--te-parquet hour_dt does not match sample ordering; regenerate cache for this sample.")
 
         te_feature_cols = [c for c in te_df.columns if c not in {"row_id", "hour_dt"}]
-        # Infer cat_cols ordering from TE column naming.
+        # Infer cat_cols ordering from TE column naming (for reporting/config).
         cat_cols: list[str] = []
         for c in te_feature_cols:
             if c.endswith("__te") or c.endswith("__hist_imps"):
@@ -294,11 +298,12 @@ def main() -> int:
                     cat_cols.append(base)
 
         te_cols: list[str] = []
-        for c in cat_cols:
-            for suffix in ("__te", "__hist_imps"):
-                name = f"{c}{suffix}"
-                if name in te_df.columns:
-                    te_cols.append(name)
+        if not args.no_te:
+            for c in cat_cols:
+                for suffix in ("__te", "__hist_imps"):
+                    name = f"{c}{suffix}"
+                    if name in te_df.columns:
+                        te_cols.append(name)
 
         if args.time_agg_entities:
             # Prepare a minimal frame for time-agg aligned to the same row order.
@@ -337,8 +342,14 @@ def main() -> int:
         if args.time_agg_entities:
             df_entities = df[["hour_dt", label_col, *args.time_agg_entities]].copy()
 
-        fe = add_time_target_encoding(df, cat_cols=cat_cols, label_col=label_col, cfg=TEConfig(m=args.m), inplace=True)
-        te_cols = [f"{c}__te" for c in cat_cols] + [f"{c}__hist_imps" for c in cat_cols]
+        if args.no_te:
+            fe = add_time_prior_ctr(df, label_col=label_col, cfg=TEConfig(m=args.m), inplace=True)
+            te_cols = []
+        else:
+            fe = add_time_target_encoding(
+                df, cat_cols=cat_cols, label_col=label_col, cfg=TEConfig(m=args.m), inplace=True
+            )
+            te_cols = [f"{c}__te" for c in cat_cols] + [f"{c}__hist_imps" for c in cat_cols]
 
         # Keep only hour_dt for reporting/export; release large categorical columns ASAP.
         df = df_report
@@ -458,11 +469,9 @@ def main() -> int:
     feature_importance: list[tuple[str, float]] = []
     if raw_importance:
         total_gain = sum(raw_importance.values())
-        name_map = (
-            {f"f{i}": name for i, name in enumerate(booster.feature_names)}
-            if booster.feature_names
-            else {}
-        )
+        # XGBoost returns feature keys as f0..fN when trained on NumPy arrays.
+        # Use our known feature order for stable, human-readable reporting.
+        name_map = {f"f{i}": name for i, name in enumerate(feature_cols)}
         feature_importance = sorted(
             [(name_map.get(key, key), gain / total_gain) for key, gain in raw_importance.items()],
             key=lambda x: x[1],
