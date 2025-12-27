@@ -4,6 +4,10 @@ This folder is the “single source of truth” for the v1 working paper artifac
 
 Writer quickstart: `paper_draft/v1/WRITER_ONBOARDING.md`
 
+Writer narrative brief (results-first): `paper_draft/v1/WRITER_BRIEF.md`
+
+Recommended figures (paths + placement suggestions): `paper_draft/v1/FIGURE_MANIFEST.md`
+
 ## Combined tables (TE vs no-TE)
 
 Directory: `paper_draft/v1/combined/`
