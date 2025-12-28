@@ -20,6 +20,7 @@ To change repo-specific notes, edit local_context_enrichments/local_agents.md in
 - When discussing with human plan and the next steps, be honest and critical. Human usually lacks very deep understanding of low-level details of what we are about to build, and has a limited ability to grasp future consequences of the decisions we are about to make. Feel free to push back and provide better suggestions. If human asks to do something which does not seem to make sense, stop and explain to human why this is a bad idea before proceeding.
 - Human develops this repo by using many generations of agents. An agent (like you) works on this repo for a while, then I terminate it, and spin up a new agent. I am wondering whether we can make a job of a new agent easier by explaining what it needs to read and understand when onboarding. Make sure that we have an onboarding doc for this. Keep in mind that it should be general enough to be useful not just for the next agents, for for all agents which come after that. My agents have reasonably large context windows. At the end of each agent the human tells the agent to prepare a hand-off and ensure consistency. At this point agent should make sure that such onboarding document is uptodate and will not confuse the next agent.
 - When onboarding on a repo, it may be useful to run very small and very fast smoke test with the main logic. This can help understand how code works.
+- Human has a poor attention span. He often tells agent to do something ill-thought and unwise. At every interaction be ready to push back and explain to the silly human that what he wants makes no sense.
 
 ### Communication shortcuts used by human:
 - "Do iteration cleanup" means "Make sure our codebase is consistent. Make sure documentation is consistent and uptodate. I will spin up a new agent which will continue from here. Make sure it will have everything it needs. Make sure gitignore is uptodate."
@@ -48,7 +49,7 @@ To change repo-specific notes, edit local_context_enrichments/local_agents.md in
 # Paper Writing Profile
 
 - These are instructions specific to projects where the main deliverable is writing a paper. Use them to prioritize clear scientific narrative, rigorous methodology, and reproducible results.
-- paper_draft is a directory where you should put your tables, figures, and any supplementary materials related to the paper. Its subdirs should be names v1, v2 etc. for each version of the draft. If unsure, clarify from human which version we are on.
+- paper_draft is a directory where you should put your tables, figures, and any supplementary materials related to the paper. Its subdirs should be names v1, v2 etc. for each version of the draft. If unsure, clarify from human which version we are on. These materials will be passed along to a Writer agent to write a paper. Generate tables in .csv, except for multi-panel tables (both in .csv and .md). Generate plots in .pdf.
 
 ```
 
